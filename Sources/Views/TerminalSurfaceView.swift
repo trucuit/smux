@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftTerm
 import Darwin
+import AppKit
 
 struct TerminalSurfaceView: NSViewRepresentable {
     let panel: TerminalPanel
@@ -114,6 +115,17 @@ func getProcessCWD(pid: pid_t) -> String? {
 
 final class SmuxTerminalView: LocalProcessTerminalView {
     weak var panel: TerminalPanel?
+    private var hasConfiguredDropHandling = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureDropHandlingIfNeeded()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureDropHandlingIfNeeded()
+    }
 
     /// Extract scrollback text from the terminal buffer (for session persistence).
     func getScrollbackText(maxChars: Int = 400_000) -> String? {
@@ -145,6 +157,7 @@ final class SmuxTerminalView: LocalProcessTerminalView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         configureOverlayScroller()
+        configureDropHandlingIfNeeded()
     }
 
     /// Hide the scroller — terminal scrollback is handled via trackpad/keyboard.
@@ -155,6 +168,118 @@ final class SmuxTerminalView: LocalProcessTerminalView {
                 break
             }
         }
+    }
+
+    private func configureDropHandlingIfNeeded() {
+        guard !hasConfiguredDropHandling else { return }
+        registerForDraggedTypes([.fileURL, .URL, .string, .png, .tiff])
+        hasConfiguredDropHandling = true
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canHandleDrop(sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canHandleDrop(sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        canHandleDrop(sender.draggingPasteboard)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let droppedText = droppedInput(from: sender.draggingPasteboard) else {
+            return false
+        }
+
+        window?.makeFirstResponder(self)
+        sendDroppedText(droppedText)
+        return true
+    }
+
+    private func canHandleDrop(_ pasteboard: NSPasteboard) -> Bool {
+        if let fileURLs = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !fileURLs.isEmpty {
+            return true
+        }
+
+        if NSImage(pasteboard: pasteboard) != nil {
+            return true
+        }
+
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+           !urls.isEmpty {
+            return true
+        }
+
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            return true
+        }
+
+        return false
+    }
+
+    private func droppedInput(from pasteboard: NSPasteboard) -> String? {
+        if let fileURLs = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !fileURLs.isEmpty {
+            return fileURLs.map { shellEscapePath($0.path) }.joined(separator: " ")
+        }
+
+        if let image = NSImage(pasteboard: pasteboard),
+           let temporaryURL = writeDroppedImageToTemporaryFile(image) {
+            return shellEscapePath(temporaryURL.path)
+        }
+
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+           !urls.isEmpty {
+            return urls.map { shellEscapePath($0.absoluteString) }.joined(separator: " ")
+        }
+
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            return text
+        }
+
+        return nil
+    }
+
+    private func writeDroppedImageToTemporaryFile(_ image: NSImage) -> URL? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smux-dropped-images", isDirectory: true)
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let fileURL = directory.appendingPathComponent("dropped-image-\(UUID().uuidString).png")
+            try pngData.write(to: fileURL, options: .atomic)
+            return fileURL
+        } catch {
+            return nil
+        }
+    }
+
+    private func shellEscapePath(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+    }
+
+    private func sendDroppedText(_ text: String) {
+        if getTerminal().bracketedPasteMode {
+            send(data: EscapeSequences.bracketedPasteStart[...])
+            send(txt: text)
+            send(data: EscapeSequences.bracketedPasteEnd[...])
+            return
+        }
+
+        send(txt: text)
     }
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
