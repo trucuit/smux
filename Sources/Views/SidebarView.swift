@@ -52,6 +52,11 @@ struct WorkspaceRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            // Accent indicator for selected workspace
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(isSelected ? Tokens.focus : .clear)
+                .frame(width: 3, height: 14)
+
             if workspace.isRenaming {
                 RenameField(text: $workspace.name) {
                     workspace.isRenaming = false
@@ -70,16 +75,16 @@ struct WorkspaceRow: View {
             let summary = workspace.activitySummary
 
             if summary.attention > 0 {
-                BadgeView(count: summary.attention, color: .orange)
+                BadgeView(count: summary.attention, color: Tokens.attention)
             } else if summary.active > 0 {
-                BadgeView(count: summary.active, color: .green)
+                BadgeView(count: summary.active, color: Tokens.active)
             }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: Tokens.rowRadius)
                 .fill(
                     isSelected ? Color.white.opacity(0.1) : isHovered ? Color.white.opacity(0.05) : Color.clear
                 )
@@ -88,6 +93,7 @@ struct WorkspaceRow: View {
         .onHover { hovering in
             isHovered = hovering
         }
+        .animation(Tokens.stateTransition, value: isSelected)
     }
 }
 

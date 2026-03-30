@@ -1,6 +1,6 @@
 import SwiftUI
 
-private let bgWorkspace = Color(nsColor: NSColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 1))
+private let bgWorkspace = Tokens.bgWorkspace
 
 struct WorkspaceView: View {
     @ObservedObject var workspace: Workspace

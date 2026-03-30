@@ -25,10 +25,10 @@ struct TerminalSurfaceView: NSViewRepresentable {
         tv.processDelegate = context.coordinator
         context.coordinator.terminalView = tv
 
-        // Dark theme
-        tv.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        tv.nativeBackgroundColor = NSColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1)
-        tv.nativeForegroundColor = NSColor(red: 0.85, green: 0.85, blue: 0.85, alpha: 1)
+        // Theme from design tokens
+        tv.font = Tokens.terminalFont
+        tv.nativeBackgroundColor = Tokens.termBackground
+        tv.nativeForegroundColor = Tokens.termForeground
 
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()

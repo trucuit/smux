@@ -25,11 +25,13 @@ struct SearchOverlay: View {
                         Image(systemName: "chevron.up")
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Find previous")
 
                     Button(action: findNext) {
                         Image(systemName: "chevron.down")
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Find next")
                 }
 
                 Button(action: dismiss) {
@@ -37,6 +39,7 @@ struct SearchOverlay: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityLabel("Close search")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
