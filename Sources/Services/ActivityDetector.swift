@@ -26,9 +26,13 @@ final class ActivityDetector: ObservableObject {
         // Single global key monitor for Enter detection
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                // Return (36) or numpad Enter (76) — only when a terminal view has focus
+                // Return (36) or numpad Enter (76) — only when a terminal view has focus.
                 if event.keyCode == 36 || event.keyCode == 76,
-                   let responder = event.window?.firstResponder, responder is SmuxTerminalView {
+                   let terminalView = event.window?.firstResponder as? SmuxTerminalView {
+                    if terminalView.insertMultilineBreakIfNeeded(for: event) {
+                        return nil
+                    }
+
                     Task { @MainActor [weak self] in
                         self?.handleEnterPress()
                     }

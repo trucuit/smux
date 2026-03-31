@@ -116,6 +116,7 @@ func getProcessCWD(pid: pid_t) -> String? {
 final class SmuxTerminalView: LocalProcessTerminalView {
     weak var panel: TerminalPanel?
     private var hasConfiguredDropHandling = false
+    private static let multilineRelevantModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -269,6 +270,18 @@ final class SmuxTerminalView: LocalProcessTerminalView {
 
     private func shellEscapePath(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+    }
+
+    func insertMultilineBreakIfNeeded(for event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(Self.multilineRelevantModifiers)
+        let isReturnKey = event.keyCode == 36 || event.keyCode == 76
+        guard isReturnKey && modifiers == [.command] else {
+            return false
+        }
+
+        let lineFeed: [UInt8] = [0x0a]
+        send(data: lineFeed[...])
+        return true
     }
 
     private func sendDroppedText(_ text: String) {

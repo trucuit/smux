@@ -150,6 +150,7 @@ struct AppCommands: Commands {
 private struct ShortcutsCheatSheet: View {
     private let sections: [(String, [(String, String)])] = [
         ("Terminal", [
+            ("Multiline Input", "⌘↩"),
             ("Close Terminal", "⌘W"),
             ("Split Right", "⌘→"),
             ("Split Down", "⌘↓"),
