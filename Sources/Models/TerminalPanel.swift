@@ -1,6 +1,37 @@
 import Foundation
 import AppKit
 import Combine
+import UniformTypeIdentifiers
+
+struct DroppedMediaItem: Identifiable, Equatable {
+    enum Kind {
+        case image
+        case video
+    }
+
+    let url: URL
+    let kind: Kind
+
+    var id: String {
+        url.absoluteString
+    }
+
+    init?(url: URL) {
+        guard url.isFileURL else { return nil }
+        let pathExtension = url.pathExtension.lowercased()
+        guard let contentType = UTType(filenameExtension: pathExtension) else { return nil }
+
+        if contentType.conforms(to: .image) {
+            kind = .image
+        } else if contentType.conforms(to: .movie) {
+            kind = .video
+        } else {
+            return nil
+        }
+
+        self.url = url
+    }
+}
 
 @MainActor
 final class TerminalPanel: ObservableObject, Identifiable {
@@ -13,6 +44,7 @@ final class TerminalPanel: ObservableObject, Identifiable {
     /// Set when a watched terminal finishes work while not focused.
     @Published var needsAttention: Bool = false
     @Published var isRenaming: Bool = false
+    @Published var recentDroppedMedia: [DroppedMediaItem] = []
     /// Whether the title was manually set by the user (prevents shell title overrides).
     var hasCustomTitle: Bool = false
 
@@ -93,5 +125,25 @@ final class TerminalPanel: ObservableObject, Identifiable {
 
     func recordDirectoryChange(_ directory: String?) {
         workingDirectory = directory
+    }
+
+    func recordDroppedMedia(urls: [URL], maxItems: Int = 8) {
+        let newItems = urls.compactMap(DroppedMediaItem.init(url:))
+        guard !newItems.isEmpty else { return }
+
+        var seenPaths = Set<String>()
+        let merged = (newItems + recentDroppedMedia).filter { item in
+            seenPaths.insert(item.url.path).inserted
+        }
+
+        recentDroppedMedia = Array(merged.prefix(maxItems))
+    }
+
+    func removeDroppedMedia(_ item: DroppedMediaItem) {
+        recentDroppedMedia.removeAll { $0 == item }
+    }
+
+    func clearDroppedMedia() {
+        recentDroppedMedia.removeAll()
     }
 }

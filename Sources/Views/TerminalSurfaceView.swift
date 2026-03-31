@@ -114,9 +114,28 @@ func getProcessCWD(pid: pid_t) -> String? {
 // MARK: - Custom Terminal View
 
 final class SmuxTerminalView: LocalProcessTerminalView {
+    private struct DroppedContent {
+        let text: String
+        let mediaURLs: [URL]
+    }
+
     weak var panel: TerminalPanel?
     private var hasConfiguredDropHandling = false
+    private var markedTextBuffer = ""
+    private var markedSelectionRange = NSRange(location: NSNotFound, length: 0)
     private static let multilineRelevantModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+    private static let supportedImageTypeHints = [
+        "public.image",
+        "png",
+        "tiff",
+        "jpeg",
+        "jpg",
+        "heic",
+        "heif",
+        "gif",
+        "webp",
+        "avif"
+    ]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -190,28 +209,26 @@ final class SmuxTerminalView: LocalProcessTerminalView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let droppedText = droppedInput(from: sender.draggingPasteboard) else {
+        guard let droppedContent = droppedContent(from: sender.draggingPasteboard) else {
             return false
         }
 
         window?.makeFirstResponder(self)
-        sendDroppedText(droppedText)
+        panel?.recordDroppedMedia(urls: droppedContent.mediaURLs)
+        sendDroppedText(droppedContent.text)
         return true
     }
 
     private func canHandleDrop(_ pasteboard: NSPasteboard) -> Bool {
-        if let fileURLs = pasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL], !fileURLs.isEmpty {
+        if let fileURLs = droppedFileURLs(from: pasteboard), !fileURLs.isEmpty {
             return true
         }
 
-        if NSImage(pasteboard: pasteboard) != nil {
+        if containsImageItems(in: pasteboard) {
             return true
         }
 
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+        if let urls = droppedNonFileURLs(from: pasteboard),
            !urls.isEmpty {
             return true
         }
@@ -223,29 +240,103 @@ final class SmuxTerminalView: LocalProcessTerminalView {
         return false
     }
 
-    private func droppedInput(from pasteboard: NSPasteboard) -> String? {
-        if let fileURLs = pasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL], !fileURLs.isEmpty {
-            return fileURLs.map { shellEscapePath($0.path) }.joined(separator: " ")
+    private func droppedContent(from pasteboard: NSPasteboard) -> DroppedContent? {
+        if let fileURLs = droppedFileURLs(from: pasteboard), !fileURLs.isEmpty {
+            return DroppedContent(
+                text: fileURLs.map { shellEscapePath($0.path) }.joined(separator: " "),
+                mediaURLs: fileURLs
+            )
         }
 
-        if let image = NSImage(pasteboard: pasteboard),
-           let temporaryURL = writeDroppedImageToTemporaryFile(image) {
-            return shellEscapePath(temporaryURL.path)
+        let imageURLs = droppedImageFileURLs(from: pasteboard)
+        if !imageURLs.isEmpty {
+            return DroppedContent(
+                text: imageURLs.map { shellEscapePath($0.path) }.joined(separator: " "),
+                mediaURLs: imageURLs
+            )
         }
 
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+        if let urls = droppedNonFileURLs(from: pasteboard),
            !urls.isEmpty {
-            return urls.map { shellEscapePath($0.absoluteString) }.joined(separator: " ")
+            return DroppedContent(
+                text: urls.map { shellEscapePath($0.absoluteString) }.joined(separator: " "),
+                mediaURLs: []
+            )
         }
 
         if let text = pasteboard.string(forType: .string), !text.isEmpty {
-            return text
+            return DroppedContent(text: text, mediaURLs: [])
         }
 
         return nil
+    }
+
+    private func droppedFileURLs(from pasteboard: NSPasteboard) -> [URL]? {
+        pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]
+    }
+
+    private func droppedNonFileURLs(from pasteboard: NSPasteboard) -> [URL]? {
+        (pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL])?
+            .filter { !$0.isFileURL }
+    }
+
+    private func containsImageItems(in pasteboard: NSPasteboard) -> Bool {
+        guard let items = pasteboard.pasteboardItems, !items.isEmpty else {
+            return NSImage(pasteboard: pasteboard) != nil
+        }
+
+        return items.contains { item in
+            pasteboardItemContainsImageData(item)
+        }
+    }
+
+    private func droppedImageFileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        guard let items = pasteboard.pasteboardItems, !items.isEmpty else {
+            if let image = NSImage(pasteboard: pasteboard),
+               let fileURL = writeDroppedImageToTemporaryFile(image) {
+                return [fileURL]
+            }
+            return []
+        }
+
+        let fileURLs: [URL] = items.compactMap { item -> URL? in
+            guard let image = image(from: item) else { return nil }
+            return writeDroppedImageToTemporaryFile(image)
+        }
+
+        if !fileURLs.isEmpty {
+            return fileURLs
+        }
+
+        if let image = NSImage(pasteboard: pasteboard),
+           let fileURL = writeDroppedImageToTemporaryFile(image) {
+            return [fileURL]
+        }
+
+        return []
+    }
+
+    private func pasteboardItemContainsImageData(_ item: NSPasteboardItem) -> Bool {
+        item.types.contains(where: isLikelyImageType(_:))
+    }
+
+    private func image(from item: NSPasteboardItem) -> NSImage? {
+        for type in item.types where isLikelyImageType(type) {
+            if let data = item.data(forType: type),
+               let image = NSImage(data: data) {
+                return image
+            }
+        }
+
+        return nil
+    }
+
+    private func isLikelyImageType(_ type: NSPasteboard.PasteboardType) -> Bool {
+        let rawType = type.rawValue.lowercased()
+        return Self.supportedImageTypeHints.contains(where: rawType.contains)
     }
 
     private func writeDroppedImageToTemporaryFile(_ image: NSImage) -> URL? {
@@ -272,10 +363,67 @@ final class SmuxTerminalView: LocalProcessTerminalView {
         "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
     }
 
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        let normalizedString = normalizeIMEText(string)
+        clearMarkedTextState()
+        super.insertText(normalizedString, replacementRange: replacementRange)
+    }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        markedTextBuffer = plainText(from: string) ?? ""
+        markedSelectionRange = selectedRange
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+    }
+
+    override func unmarkText() {
+        clearMarkedTextState()
+        super.unmarkText()
+    }
+
+    override func markedRange() -> NSRange {
+        guard !markedTextBuffer.isEmpty else {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+
+        return NSRange(location: 0, length: (markedTextBuffer as NSString).length)
+    }
+
+    override func hasMarkedText() -> Bool {
+        !markedTextBuffer.isEmpty
+    }
+
+    override func selectedRange() -> NSRange {
+        guard !markedTextBuffer.isEmpty else {
+            return super.selectedRange()
+        }
+
+        let length = (markedTextBuffer as NSString).length
+        let location = max(0, min(markedSelectionRange.location, length))
+        let selectionLength = max(0, min(markedSelectionRange.length, length - location))
+        return NSRange(location: location, length: selectionLength)
+    }
+
+    override func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        guard !markedTextBuffer.isEmpty else {
+            return super.attributedSubstring(forProposedRange: range, actualRange: actualRange)
+        }
+
+        let nsText = markedTextBuffer as NSString
+        let fullRange = NSRange(location: 0, length: nsText.length)
+        let safeRange = NSIntersectionRange(range, fullRange)
+        actualRange?.pointee = safeRange
+        guard safeRange.length > 0 else {
+            return NSAttributedString(string: "")
+        }
+
+        return NSAttributedString(string: nsText.substring(with: safeRange))
+    }
+
     func insertMultilineBreakIfNeeded(for event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(Self.multilineRelevantModifiers)
         let isReturnKey = event.keyCode == 36 || event.keyCode == 76
-        guard isReturnKey && modifiers == [.command] else {
+        let isMultilineShortcut = modifiers == [.command] || modifiers == [.shift]
+        guard isReturnKey && isMultilineShortcut else {
             return false
         }
 
@@ -295,6 +443,12 @@ final class SmuxTerminalView: LocalProcessTerminalView {
         send(txt: text)
     }
 
+    func insertMediaPath(_ url: URL) {
+        guard url.isFileURL else { return }
+        window?.makeFirstResponder(self)
+        sendDroppedText(shellEscapePath(url.path))
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         super.dataReceived(slice: slice)
         Task { @MainActor [weak self] in
@@ -304,5 +458,51 @@ final class SmuxTerminalView: LocalProcessTerminalView {
 
     override func bell(source: Terminal) {
         super.bell(source: source)
+    }
+
+    private func plainText(from value: Any) -> String? {
+        if let string = value as? String {
+            return string
+        }
+
+        if let string = value as? NSString {
+            return string as String
+        }
+
+        if let attributedString = value as? NSAttributedString {
+            return attributedString.string
+        }
+
+        return nil
+    }
+
+    private func normalizeIMEText(_ value: Any) -> Any {
+        guard let text = plainText(from: value) else {
+            return value
+        }
+
+        guard text.contains("\u{7f}") || text.contains("\u{08}") else {
+            return text
+        }
+
+        var normalizedCharacters: [Character] = []
+        normalizedCharacters.reserveCapacity(text.count)
+
+        for character in text {
+            if character == "\u{7f}" || character == "\u{08}" {
+                if !normalizedCharacters.isEmpty {
+                    normalizedCharacters.removeLast()
+                }
+                continue
+            }
+            normalizedCharacters.append(character)
+        }
+
+        return String(normalizedCharacters)
+    }
+
+    private func clearMarkedTextState() {
+        markedTextBuffer = ""
+        markedSelectionRange = NSRange(location: NSNotFound, length: 0)
     }
 }
